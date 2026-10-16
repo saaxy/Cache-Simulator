@@ -1,9 +1,0 @@
-build/
-out/
-.vs/
-.vscode/
-*.exe
-*.obj
-*.o
-*.csv
-__pycache__/
