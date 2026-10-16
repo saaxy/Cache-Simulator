@@ -1,105 +1,240 @@
-# CacheSim: interview preparation
+# CacheSim — CPU Cache Simulator
 
-Read the code and re-run the experiments before an interview; answer in your own words. Every number below comes from `results/sample_results.csv` or the test files, and you should be able to regenerate it (`cachesim_bench --synthetic all`). Do not claim anything the project does not do (see the honesty notes at the end).
+A configurable **CPU cache simulator built using C++17** to study cache behavior, memory access patterns, replacement policies, and performance trade-offs through trace-driven simulation.
 
-## 60-second explanation
+CacheSim simulates memory accesses and reports cache hits, misses, evictions, memory traffic, and model-based Average Memory Access Time (AMAT). It supports configurable L1 and optional L2 caches, multiple replacement policies, and automated benchmarking.
 
-"I built a configurable CPU cache simulator in C++17. You feed it a trace of reads and writes with addresses, and it models a cache with a chosen size, block size and associativity, from direct-mapped to fully associative, with LRU or FIFO replacement and write-back or write-through with or without write-allocate. It reports hits, misses, evictions and memory traffic, and it can add an L2 and give a model-based AMAT estimate. The core idea is that an address splits into tag, set index and block offset; the set index picks a set, and the tag is compared with the lines in that set. I tested it with hand-calculated cases, a randomized comparison against an independent reference model, and end-to-end tests. Then I built a benchmark runner and plotting scripts to see how associativity, capacity and block size change the hit rate. For example, a strided pattern whose addresses all map to one set gets zero hits up to 4 ways and almost all hits at 8 ways. It is a functional model, so the results illustrate behavior and are not hardware measurements."
+## Features
 
-## 3-minute technical walkthrough
+- **Configurable cache:** Capacity, block size, and associativity.
+- **Cache organizations:** Direct-mapped, set-associative, and fully associative.
+- **Replacement policies:** LRU (Least Recently Used) and FIFO (First In, First Out).
+- **Write policies:** Write-through and write-back.
+- **Write allocation:** Write-allocate and no-write-allocate.
+- **Multi-level cache:** Optional L2 cache configuration.
+- **Performance statistics:** Hit rate, miss rate, evictions, memory transactions, and estimated AMAT.
+- **Trace-driven simulation:** Parses read and write memory-access traces.
+- **Synthetic trace generation:** Sequential, random, hot-set, and strided access patterns.
+- **Automated benchmarking:** Sweeps cache parameters and exports results to CSV.
+- **Visualization:** Python scripts using pandas and Matplotlib to plot benchmark results.
+- **Testing:** CTest-based unit, differential, and end-to-end tests.
 
-1. **Problem and scope (20 s).** Memory is slow, caches exploit locality. I wanted to understand the mechanics by building the model, so I made it a functional simulator: it tracks which blocks are present, not data or time.
-2. **Configuration (20 s).** `CacheConfig` is immutable and validated in its constructor: sizes must be powers of two, block no larger than capacity, ways a power of two and no more than the number of lines. If an object exists, its derived values (sets, offset bits, index bits) are consistent. `split()` computes tag, index and offset with shifts and masks; fully associative is just one set, so the same code covers every organization.
-3. **Cache core (45 s).** Lines are a flat `std::vector<CacheLine>`, with set `s` at `[s*ways, (s+1)*ways)`. An access scans the ways of one set. On a miss it picks an empty way or the way with the smallest stamp. One stamp field serves both policies: FIFO writes it only on fill, LRU also on every hit. Write policies are a small block of logic: write-back marks the line dirty and writes memory on dirty eviction; write-through forwards every store; no-write-allocate sends a write miss straight to the next level.
-4. **Hierarchy (25 s).** `accessDetailed` reports what an access sent downstream: a fetch, a forwarded write, a dirty eviction with its address. `runSimulation` turns those into L2 accesses. AMAT uses the textbook formula with illustrative latencies and is labelled as an estimate.
-5. **Tooling (20 s).** Trace parser with `file:line` errors, CSV output, a deterministic synthetic trace generator, a benchmark runner that loads a trace once and sweeps about 29 configurations, and a pandas/Matplotlib script.
-6. **Testing (30 s).** 20 CTest tests: expected results derived by hand in comments; a randomized differential test against a naive reference model with a fixed seed; end-to-end tests of the executables. These show the code matches the documented semantics, not that it matches real hardware.
-7. **Results and limits (20 s).** Strided trace: 0 hits up to 4-way, 0.9998 at 8-way. Block size: sequential improves from 0.75 to 0.98 as blocks grow, while the hot-set trace falls from 0.9994 to 0.57 at a fixed capacity. Limitations: no timing, no access sizes, no coherence, exact LRU only, AMAT is a model.
+## Cache Concepts Visualized
 
-## Likely questions and answers
+The following plots illustrate how different cache parameters and policies influence simulated cache behavior.
 
-### Cache concepts
+### 1. Cache Associativity
 
-**1. How does an address map into the cache?**
-Split it into block offset (low log2(block size) bits), set index (next log2(sets) bits) and tag (the rest). The index selects the set; the tag is compared against every valid line in that set. Example from my tests: 1 KiB direct-mapped, 16 B blocks gives offset 4 bits, index 6 bits, and `0x1234` is tag 4, index 35, offset 4.
+![Cache associativity comparison](CacheSim/docs/img/associativity.png)
 
-**2. Direct-mapped vs set-associative vs fully associative?**
-Direct-mapped has one candidate line, so it is fastest and cheapest but suffers conflict misses. N-way gives N candidates per set. Fully associative has no conflict misses but needs a search of every line (expensive in hardware). In my simulator they are the same code with a different number of ways. On the `hotset` trace the hit rate went from 0.738 (1-way) to 0.9994 (4-way).
+Associativity determines how many cache lines can store blocks mapping to the same set. Higher associativity can reduce conflict misses, but its benefit depends on the access pattern.
 
-**3. Why must sizes be powers of two?**
-So the index and offset are plain bit fields that can be extracted with shifts and masks, as hardware does. With a non-power-of-two number of sets you would need a modulo.
+### 2. Cache Block Size
 
-**4. Compulsory, capacity and conflict misses; does your simulator classify them?**
-Compulsory: first reference to a block. Capacity: the working set exceeds the cache. Conflict: evicted only because of the set mapping. My simulator does not classify them. To do it you track every block ever seen (compulsory) and run a parallel fully associative cache of the same size: a miss that also misses there is capacity, and one that hits there is conflict. The strided trace shows a conflict effect indirectly: 4 ways thrash, a fully associative cache of the same size does not.
+![Cache block size comparison](CacheSim/docs/img/block_size.png)
 
-**5. LRU vs FIFO?**
-LRU evicts the least recently used line and refreshes recency on hits; FIFO evicts the oldest-inserted line and ignores hits. LRU exploits temporal locality, FIFO is simpler. Neither wins everywhere: in my tests `A B A C A` favors LRU, while `A B C B A C B` favors FIFO. FIFO is not a stack algorithm, so Belady's anomaly (more capacity, more misses) is possible in theory; my simulator requires power-of-two ways, so I cannot reproduce the classic 3-vs-4 example directly.
+Block size controls how much data is brought into the cache on a miss. Larger blocks can exploit spatial locality, but they also reduce the number of cache lines available at a fixed capacity.
 
-**6. Why does cycling through N+1 blocks in an N-way set defeat LRU?**
-Each access evicts exactly the block that will be needed next, so every access misses. My `testCyclicThrashingMissesUnderBothPolicies` shows 9 misses out of 9 for both policies. It is also what the strided trace does for up to 4 ways.
+### 3. Cache Capacity
 
-**7. Write-through vs write-back?**
-Write-through sends every store to the next level: simple and memory is always current, but heavy write traffic. Write-back marks the line dirty and writes it only on eviction: less traffic, but needs a dirty bit and dirty data exists only in the cache. In my results the hot-set trace sends about 20% of accesses to memory under write-through (0.1975 per access) and almost none under write-back (0.0006).
+![Cache capacity comparison](CacheSim/docs/img/capacity.png)
 
-**8. Write-allocate vs no-write-allocate?**
-On a write miss, write-allocate brings the block in; no-write-allocate writes around the cache. Write-allocate pays off if the data is touched again; no-write-allocate suits write-once streams. Common pairings are write-back + write-allocate and write-through + no-write-allocate. In my random/strided results no-write-allocate lowered memory transactions per access (1.14 to 0.95) because it skips the fetch.
+Cache capacity affects how much data can remain available for reuse. Increasing capacity can reduce capacity-related and some conflict-related misses.
 
-**9. How does block size affect hit rate?**
-Larger blocks bring in more neighboring data (spatial locality) but at a fixed capacity there are fewer lines, so there is more conflict and wasted fetch. Sequential improved from 0.75 (16 B) to 0.984 (256 B); the hot-set trace dropped from 0.9994 (64 B) to 0.573 (256 B).
+### 4. L2 Cache and AMAT
 
-**10. What is AMAT and what does your estimate leave out?**
-Average memory access time = hit time + miss rate x miss penalty; with two levels the penalty is L2 hit time + L2 local miss rate x memory latency. My version uses illustrative latencies (4/12/200 cycles) and counts every access equally. It ignores write buffers, overlapped misses, prefetching and queueing, so it is a model-based estimate and not a measurement.
+![L2 cache and AMAT comparison](CacheSim/docs/img/l2_amat.png)
 
-### C++ and implementation
+The optional L2 cache and latency model help explore how another cache level affects estimated average memory access time (AMAT).
 
-**11. Why a flat `std::vector<CacheLine>` instead of `vector<vector<>>`, `std::list` or `unordered_map`?**
-A flat vector is contiguous, so scanning a set of 1 to 8 ways is cache-friendly with no per-set allocation. `std::list` gives O(1) reordering but pointer chasing and node allocation make it slower for tiny sets. A hash map from tag to way would speed up very large fully associative caches (O(1) instead of O(lines)), but adds hashing cost and a second structure to keep consistent on eviction, so I did not need it. A fixed `std::array` does not fit because the sizes are runtime-configurable.
+### 5. Replacement Policies
 
-**12. Why is `CacheConfig` immutable and validated in the constructor?**
-So an invalid configuration can never exist: any code holding a `CacheConfig` can rely on its invariants (power-of-two sizes, consistent set count and bit widths). Errors surface once, at construction, with a clear message.
+![Cache replacement policy comparison](CacheSim/docs/img/replacement.png)
 
-**13. What is the time and space complexity?**
-An access is O(ways); a miss adds O(ways) to pick a victim. Memory is O(lines). A run is O(trace length x ways). The trace is held in memory, 16 bytes per access.
+LRU replaces the least recently used line, whereas FIFO replaces the line inserted earliest. Their relative performance depends on the memory-access sequence.
 
-**14. Why `enum class`, `std::optional`, and exceptions?**
-`enum class` avoids implicit conversions and name clashes. `std::optional<double>` models "AMAT is undefined with zero accesses" without a magic number; `std::optional<CacheConfig>` models "no L2". Exceptions (`std::invalid_argument`) report invalid input at the point it is detected, and `main` maps them to exit codes.
+### 6. Write Policies
 
-**15. What undefined-behavior or overflow pitfalls did you handle?**
-Shifting a 64-bit value by 64 is undefined, so the set-index mask is `numSets - 1` (zero when there is one set) and the largest shift is 63. The trace parser checks for 64-bit overflow before each nibble shift, and the CLI parser checks overflow when parsing numbers and `K/M/G` suffixes. I avoided `strtoull`, which accepts signs and silently saturates.
+![Cache write policy comparison](CacheSim/docs/img/write_policy.png)
 
-**16. How did you test it?**
-Hand-calculated unit tests (each expected value is derived in a comment), a randomized differential test against a different naive implementation, and end-to-end tests of the executables. One practical check worth doing yourself before you claim it: deliberately break a line (for example make LRU not refresh on a hit) and confirm that tests fail.
+Write-through sends writes to the next memory level immediately. Write-back marks modified lines as dirty and writes them back when evicted. Write-allocation policies determine what happens on a write miss.
 
-**17. Why are some floating-point comparisons exact in tests and others use a tolerance?**
-Values like 3/4 and 1/4 are exactly representable in binary, so exact comparison is safe. AMAT values like 149.333... use `CHECK_NEAR` with a tolerance.
+## Project Architecture
 
-### Design trade-offs
+The project separates cache simulation logic from command-line handling, trace parsing, reporting, and benchmarking.
 
-**18. Why separate `Cache`, `Simulation`, `Report` and `main`?**
-So the simulation is testable without I/O, the same `simulate`/`runSimulation` code serves the CLI and the benchmark runner, and formatting changes cannot affect results. It is also why the benchmark can load a trace once and reuse it for every configuration.
+- **Cache:** Handles cache accesses, hits, misses, evictions, and replacement.
+- **CacheConfig:** Validates cache parameters and supports address decomposition.
+- **Simulation:** Coordinates cache levels and calculates model-based AMAT.
+- **TraceParser:** Reads and validates memory-access traces.
+- **TraceGenerator:** Generates deterministic synthetic workloads.
+- **Statistics:** Tracks simulation metrics.
+- **Report:** Produces text and CSV output.
+- **Benchmark:** Runs parameter sweeps for performance comparisons.
 
-**19. Why use a per-line logical-clock stamp for both policies?**
-One field and one victim rule (smallest stamp) keep the code small and make the difference between LRU and FIFO a single line (refresh on hit or not). The cost is O(ways) to find the victim, which is fine for small associativity; real hardware uses approximations such as pseudo-LRU. If I needed more policies with their own per-set state, I would introduce a replacement-policy interface.
+## Project Structure
 
-**20. How would you make it more realistic, and what are its limits?**
-Add access sizes and real trace formats, a timing model with MSHRs and write buffers, inclusive/exclusive L2, prefetching, pseudo-LRU, and multi-core coherence. Current limits: functional only, one core, physical addresses, no access sizes, AMAT is an estimate, and synthetic traces are illustrations rather than representative workloads.
+```text
+CacheSim/
+├── docs/
+│   ├── img/
+│   │   ├── associativity.png
+│   │   ├── block_size.png
+│   │   ├── capacity.png
+│   │   ├── l2_amat.png
+│   │   ├── replacement.png
+│   │   └── write_policy.png
+│   └── INTERVIEW_PREP.md
+├── include/          # Header files
+├── results/          # Sample benchmark results
+├── scripts/          # Plotting scripts
+├── src/              # C++ implementation
+├── tests/            # Automated tests
+├── traces/           # Sample memory-access traces
+├── CMakeLists.txt
+└── README.md
+```
 
-## Questions to ask yourself about the results
+## Requirements
 
-- Why is the `sequential` hit rate exactly 0.9375? (64 B blocks, 4 B steps: 1 miss + 15 hits per block.)
-- Why does `random` hit about 0.0625 at 4 KiB? (capacity / range = 4 KiB / 64 KiB.)
-- Why does `strided` only improve at 32 KiB in the capacity sweep? (More sets spread the 4096-byte-apart addresses over several sets.)
-- Why do LRU and FIFO look identical in the sweeps? (These synthetic traces have no recency structure that separates them; the hand-built test sequences do.)
+- C++17-compatible compiler
+- CMake 3.14 or newer
+- Python 3 and the dependencies in `scripts/requirements.txt` for plotting
 
-## Resume-ready description (three bullets)
+The simulator itself does not require external C++ libraries.
 
-- Designed and implemented a configurable CPU cache simulator in C++17 (direct-mapped to fully associative, LRU/FIFO, write-back/write-through, write-allocate/no-write-allocate, optional L2 with a model-based AMAT estimate) with trace parsing, input validation and CSV/text reporting.
-- Verified it with 20 CTest tests: hand-calculated cases, a randomized differential test against an independent reference model, and end-to-end tests of the command-line tools.
-- Built a benchmark runner, a deterministic synthetic trace generator and pandas/Matplotlib scripts to study how associativity, capacity, block size, write policy and L2 size affect hit rate, memory traffic and estimated AMAT.
+## Build and Run
 
-## Honesty notes
+Run the following commands from the `CacheSim` project directory.
 
-- It is a functional CPU-cache model. Do not say it measures real hardware or predicts GPU performance; AMAT and latencies are model-based estimates with illustrative inputs.
-- Say "synthetic traces" when quoting results; they illustrate behavior and are not representative workloads.
-- It does not classify misses, model timing, or implement coherence. Say so if asked.
-- Only claim what you can explain line by line. If you did not write or run something yourself, do it before the interview.
+### Windows (PowerShell with CMake and a configured C++ compiler)
+
+```powershell
+cmake -S . -B build
+cmake --build build --config Debug
+ctest --test-dir build -C Debug --output-on-failure
+```
+
+Run the simulator:
+
+```powershell
+.\build\Debug\cachesim.exe --trace traces\sample.trace
+```
+
+### Linux / macOS
+
+```bash
+cmake -S . -B build
+cmake --build build
+ctest --test-dir build --output-on-failure
+./build/cachesim --trace traces/sample.trace
+```
+
+## Example Commands
+
+Run a simulation using the sample trace:
+
+```bash
+cachesim --trace traces/sample.trace
+```
+
+Enable CSV output:
+
+```bash
+cachesim --trace traces/sample.trace --csv
+```
+
+Configure cache capacity, block size, and associativity:
+
+```bash
+cachesim --trace traces/sample.trace --size 4K --block 32 --assoc 4
+```
+
+Use FIFO replacement:
+
+```bash
+cachesim --trace traces/sample.trace --replacement fifo
+```
+
+Configure write-through and no-write-allocate:
+
+```bash
+cachesim --trace traces/sample.trace --write-policy wt --write-miss no-allocate
+```
+
+Enable an L2 cache:
+
+```bash
+cachesim --trace traces/sample.trace --size 1K --assoc 2 --l2-size 8K --l2-assoc 4
+```
+
+View available command-line options:
+
+```bash
+cachesim --help
+```
+
+## Memory Trace Format
+
+Each trace line contains an access type and a hexadecimal memory address.
+
+```text
+R 0x00001000
+W 0x00002000
+R 0x00001004
+```
+
+- `R` represents a read.
+- `W` represents a write.
+- Blank lines and comments beginning with `#` are supported.
+
+## Benchmarking and Visualization
+
+The benchmark executable sweeps cache configurations using the same input traces and writes results to CSV. The trace generator can create sequential, random, hot-set, and strided workloads.
+
+The plotting script in `scripts/plot_results.py` uses pandas and Matplotlib to visualize benchmark results.
+
+Install its Python dependencies with:
+
+```bash
+python -m pip install -r scripts/requirements.txt
+```
+
+Use the benchmark executable's help output to check its available options before running experiments.
+
+## Testing
+
+The project includes automated tests for cache configuration, address mapping, replacement policies, write policies, trace parsing, simulation behavior, benchmarking, and command-line functionality.
+
+Run the test suite after building:
+
+```bash
+ctest --test-dir build --output-on-failure
+```
+
+On a Visual Studio Windows build, specify the configuration:
+
+```powershell
+ctest --test-dir build -C Debug --output-on-failure
+```
+
+## Limitations
+
+- This is a functional cache simulator, not a cycle-accurate hardware simulator.
+- AMAT is a model-based estimate using configurable latency assumptions.
+- It does not model cache coherence, multicore execution, or detailed memory-system timing.
+- It does not explicitly classify misses as compulsory, capacity, or conflict misses.
+- Synthetic benchmark results illustrate cache behavior and should not be treated as measurements of real hardware.
+
+## Technologies Used
+
+**C++17 · CMake · Python · pandas · Matplotlib · CTest · Git**
+
+## Learning Outcomes
+
+- Understanding cache address decomposition into tag, set index, and block offset.
+- Comparing direct-mapped, set-associative, and fully associative caches.
+- Evaluating LRU and FIFO replacement strategies.
+- Understanding write-through, write-back, and write-allocation policies.
+- Exploring locality, memory traffic, cache hit rates, and estimated AMAT.
+- Applying modular C++ design, automated testing, benchmarking, and data visualization.
