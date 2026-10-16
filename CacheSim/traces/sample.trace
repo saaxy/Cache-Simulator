@@ -1,0 +1,48 @@
+# CacheSim sample trace. Format: <R|W> <hex address>; '#' starts a comment.
+
+# Phase 1: scan 8 consecutive words (one 64-byte block), twice.
+# Shows spatial locality and temporal reuse.
+R 0x00001000
+R 0x00001004
+R 0x00001008
+R 0x0000100C
+R 0x00001010
+R 0x00001014
+R 0x00001018
+R 0x0000101C
+R 0x00001000
+R 0x00001004
+R 0x00001008
+R 0x0000100C
+R 0x00001010
+R 0x00001014
+R 0x00001018
+R 0x0000101C
+
+# Phase 2: writes to another block, then a read of it.
+W 0x00002000
+W 0x00002004
+W 0x00002008
+R 0x00002000
+
+# Phase 3: five blocks that map to the same set in a 32 KiB, 4-way, 64 B cache
+# (addresses 0x2000 apart), read cyclically twice. Five blocks do not fit in
+# four ways, so this thrashes under LRU and FIFO at 4-way.
+R 0x00001000
+R 0x00003000
+R 0x00005000
+R 0x00007000
+R 0x00009000
+R 0x00001000
+R 0x00003000
+R 0x00005000
+R 0x00007000
+R 0x00009000
+
+# Phase 4: dirty a block, then push four new blocks through its set
+# so that it gets evicted while dirty (write-back cost).
+W 0x00009000
+R 0x00001000
+R 0x0000B000
+R 0x0000D000
+R 0x0000F000

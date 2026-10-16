@@ -1,0 +1,11 @@
+build/
+out/
+.vs/
+.vscode/
+*.exe
+*.obj
+*.o
+__pycache__/
+# Result files are ignored by default; the shipped sample results are kept.
+*.csv
+!results/sample_results.csv
